@@ -4,7 +4,11 @@ import org.itech.ahb.lib.common.ASTMMessage;
 
 public interface ASTMHandler {
 
-	void handle(ASTMMessage message);
+	public enum HandleStatus {
+		SUCCESS, FAIL, UNHANDLED
+	}
+
+	HandleStatus handle(ASTMMessage message);
 	
 	boolean matches(ASTMMessage message);
 

@@ -32,7 +32,7 @@ public class DefaultForwardingASTMToHTTPHandler implements ASTMHandler {
 	}
 
 	@Override
-	public void handle(ASTMMessage message) {
+	public HandleStatus handle(ASTMMessage message) {
 		HttpClient client = HttpClient.newHttpClient();
 		log.debug("creating request to forward to http server at " + forwardingUri.toString());
 		Builder requestBuilder = HttpRequest.newBuilder()//
@@ -50,12 +50,12 @@ public class DefaultForwardingASTMToHTTPHandler implements ASTMHandler {
 			log.debug("forwarding request to http server at " + forwardingUri.toString());
 			HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 			if (response.statusCode() == 200) {
-				// TODO change to Handle status return handleStatus success
+				return HandleStatus.SUCCESS;
 			}
 		} catch (IOException | InterruptedException e) {
 			log.error("error occurred communicating with http server at " + forwardingUri.toString(), e);
 		}
-		// TODO change to Handle status return handleStatus fail
+		return HandleStatus.FAIL;
 	}
 
 	@Override

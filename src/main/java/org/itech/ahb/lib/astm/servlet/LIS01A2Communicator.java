@@ -22,7 +22,12 @@ import org.itech.ahb.lib.common.ASTMFrame;
 import org.itech.ahb.lib.common.ASTMFrame.FrameType;
 import org.itech.ahb.lib.common.ASTMInterpreter;
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.exception.ASTMCommunicationException;
+import org.itech.ahb.lib.common.exception.FrameParsingException;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 public class LIS01A2Communicator {
 
 	public enum FrameError {
@@ -52,15 +57,17 @@ public class LIS01A2Communicator {
 	public static final int MAX_FRAME_SIZE = 64000;
 	public static final int MAX_TEXT_SIZE = MAX_FRAME_SIZE - 7;
 
-	private static final int ESTABLISHMENT_SEND_TIMEOUT = 150;// 15; // in seconds
-	private static final int ESTABLISHMENT_RECEIVE_TIMEOUT = 200;// 20; // in seconds
-	private static final int RECIEVE_FRAME_TIMEOUT = 300;// 30; // in seconds
-	private static final int SEND_FRAME_TIMEOUT = 300;// 30; // in seconds
+	private static final int ESTABLISHMENT_SEND_TIMEOUT = 15; // in seconds
+	private static final int ESTABLISHMENT_RECEIVE_TIMEOUT = 20; // in seconds
+	private static final int RECIEVE_FRAME_TIMEOUT = 30; // in seconds
+	private static final int SEND_FRAME_TIMEOUT = 30; // in seconds
 
-	private static final int MAX_SEND_RETRY_ATTEMPTS = 0;// 3;
+	private static final int MAX_RECEIVE_RETRY_ATTEMPTS = 3;
+
+	private static final int MAX_SEND_ESTABLISH_RETRY_ATTEMPTS = 3;
 	private static final int SEND_ATTEMPTS_WAIT = 10; // in seconds
 
-	private static final int MAX_FRAME_RETRY_ATTEMPTS = 0;// 5;
+	private static final int MAX_FRAME_RETRY_ATTEMPTS = 5;
 
 	private final ExecutorService executor = Executors.newSingleThreadExecutor();
 	private final ASTMInterpreter interpreter;
@@ -69,7 +76,8 @@ public class LIS01A2Communicator {
 		this.interpreter = interpreter;
 	}
 
-	public List<ASTMMessage> receiveProtocol(BufferedReader reader, PrintWriter writer) {
+	public List<ASTMMessage> receiveProtocol(BufferedReader reader, PrintWriter writer)
+			throws FrameParsingException, ASTMCommunicationException, IOException {
 		List<ASTMFrame> frames = new ArrayList<>();
 
 		final Future<Boolean> establishedFuture = executor.submit(establishmentTaskReceive(reader, writer));
@@ -78,61 +86,69 @@ public class LIS01A2Communicator {
 			established = establishedFuture.get(ESTABLISHMENT_RECEIVE_TIMEOUT, TimeUnit.SECONDS);
 		} catch (TimeoutException e) {
 			establishedFuture.cancel(true);
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		} catch (InterruptedException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		} catch (ExecutionException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			executor.shutdown();
+			throw new ASTMCommunicationException(
+					"a timeout occured during the establishment phase of the receive protocol", e);
+		} catch (InterruptedException | ExecutionException e) {
+			executor.shutdown();
+			throw new ASTMCommunicationException(
+					"the establishment phase of the receive protocol was interrupted or had an error in execution", e);
 		}
 		if (!established) {
 			executor.shutdown();
-			return interpreter.interpretFramesToASTMMessages(frames);
+			throw new ASTMCommunicationException(
+					"something went wrong in the establishment phase of the receive protocol, possibly the wrong start character was received");
 		}
 
-		try {
-			boolean eotDetected = false;
-			while (!eotDetected) {
-				char startChar = (char) reader.read();
-				if (startChar == EOT) {
-					eotDetected = true;
-				} else {
-					final Future<Set<FrameError>> recievedFrameFuture = executor
-							.submit(receiveNextFrameTask(reader, writer, frames));
-					try {
-						Set<FrameError> frameErrors = recievedFrameFuture.get(RECIEVE_FRAME_TIMEOUT, TimeUnit.SECONDS);
+		boolean eotDetected = false;
+		int i = 0;
+		List<Exception> exceptions = new ArrayList<>();
+		while (!eotDetected && exceptions.size() <= MAX_RECEIVE_RETRY_ATTEMPTS) {
+			if (exceptions.size() > 0) {
+				log.debug("attempting retry of frame " + i);
+			}
+			char startChar = (char) reader.read();
+			if (startChar == EOT) {
+				eotDetected = true;
+			} else {
+				final Future<Set<FrameError>> recievedFrameFuture = executor
+						.submit(receiveNextFrameTask(reader, writer, frames));
+				try {
+					Set<FrameError> frameErrors = recievedFrameFuture.get(RECIEVE_FRAME_TIMEOUT, TimeUnit.SECONDS);
 
-						if (startChar != STX) {
-							frames.remove(frames.size() - 1);
-							frameErrors.add(FrameError.ILLEGAL_START);
-						}
-						if (frameErrors.isEmpty()) {
-							writer.append(ACK);
-							writer.flush();
-						} else {
-							writer.append(NAK);
-							writer.flush();
-						}
-					} catch (TimeoutException e) {
-						recievedFrameFuture.cancel(true);
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					} catch (InterruptedException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					} catch (ExecutionException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
+					if (startChar != STX) {
+						frames.remove(frames.size() - 1);
+						frameErrors.add(FrameError.ILLEGAL_START);
 					}
+					if (frameErrors.isEmpty()) {
+						log.debug("frame successfully received");
+						writer.append(ACK);
+						writer.flush();
+						exceptions = new ArrayList<>();// reset as retry mechanism is per frame
+						++i;
+					} else {
+						log.debug("frame unsuccessfully received due to: " + frameErrors);
+						writer.append(NAK);
+						writer.flush();
+						exceptions.add(
+								new ASTMCommunicationException("frame unsuccessfully received due to: " + frameErrors));
+					}
+				} catch (TimeoutException e) {
+					recievedFrameFuture.cancel(true);
+					exceptions.add(e);
+					log.error("a timeout occured during the receiving phase", e);
+				} catch (InterruptedException | ExecutionException e) {
+					log.error("the receiving phase was interrupted or had an error in exeuction", e);
+					exceptions.add(e);
 				}
 			}
-
-		} catch (Exception e) {
-			e.printStackTrace();
 		}
-		executor.shutdown();
+
+		if (exceptions.size() > MAX_RECEIVE_RETRY_ATTEMPTS) {
+			executor.shutdown();
+			throw new ASTMCommunicationException(
+					"the receiving phase failed or had exceptions exceeding the number of retries");
+		}
 
 		return interpreter.interpretFramesToASTMMessages(frames);
 	}
@@ -166,6 +182,7 @@ public class LIS01A2Communicator {
 
 	private Set<FrameError> readNextFrame(BufferedReader reader, PrintWriter writer, List<ASTMFrame> frames,
 			int expectedFrameNumber) throws IOException {
+		log.debug("reading frame...");
 		Set<FrameError> frameErrors = new HashSet<>();
 		char frameNumberChar = (char) reader.read();
 		if (expectedFrameNumber != Character.getNumericValue(frameNumberChar)) {
@@ -187,11 +204,13 @@ public class LIS01A2Communicator {
 		}
 		boolean finalFrame = (curChar == ETX);
 		String text = textBuilder.toString();
+		log.debug("frame text received");
 
 		StringBuilder checksum = new StringBuilder();
 		checksum.append((char) reader.read());
 		checksum.append((char) reader.read());
 
+		log.debug("checking checksum...");
 		if (!checksumFits(checksum.toString(), frameNumberChar, text, curChar)) {
 			frameErrors.add(FrameError.BAD_CHECKSUM);
 		}
@@ -207,102 +226,91 @@ public class LIS01A2Communicator {
 			frame.setType(finalFrame ? FrameType.END : FrameType.INTERMEDIATE);
 			frame.setText(text);
 			frames.add(frame);
+			log.debug("frame added to list of frames");
 		}
 		return frameErrors;
 	}
 
-	public boolean sendProtocol(ASTMMessage message, BufferedReader reader, PrintWriter writer) {
-		try {
-			List<ASTMFrame> frames = interpreter.interpretASTMMessageToFrames(message);
+	public void sendProtocol(ASTMMessage message, BufferedReader reader, PrintWriter writer)
+			throws ASTMCommunicationException, IOException {
+		List<ASTMFrame> frames = interpreter.interpretASTMMessageToFrames(message);
 
-			Boolean established = false;
-			for (int i = 0; i <= MAX_SEND_RETRY_ATTEMPTS; i++) {
-				final Future<Boolean> establishedFuture = executor.submit(establishmentTaskSend(reader, writer));
+		Boolean established = false;
+		for (int i = 0; i <= MAX_SEND_ESTABLISH_RETRY_ATTEMPTS; i++) {
+			final Future<Boolean> establishedFuture = executor.submit(establishmentTaskSend(reader, writer));
+			try {
+				established = establishedFuture.get(ESTABLISHMENT_SEND_TIMEOUT, TimeUnit.SECONDS);
+
+			} catch (TimeoutException e) {
+				establishedFuture.cancel(true);
+				log.error("a timeout occured during the establishment phase of the send protocol", e);
+			} catch (InterruptedException | ExecutionException e) {
+				log.error("the establishment phase of the send protocol was interrupted or had an error in execution",
+						e);
+			}
+
+			if (established) {
+				break;
+			} else {
 				try {
-					established = establishedFuture.get(ESTABLISHMENT_SEND_TIMEOUT, TimeUnit.SECONDS);
-				} catch (TimeoutException e) {
-					establishedFuture.cancel(true);
-					// TODO Auto-generated catch block
-					e.printStackTrace();
+					Thread.sleep(SEND_ATTEMPTS_WAIT * 1000);
 				} catch (InterruptedException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (ExecutionException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
-
-				if (established) {
-					break;
-				} else {
-					try {
-						Thread.sleep(SEND_ATTEMPTS_WAIT * 1000);
-					} catch (InterruptedException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
+					log.error("the establishment phase of the send protocol was interrupted while waiting to rety", e);
 				}
 			}
-
-			if (!established) {
-				executor.shutdown();
-				termination(writer);
-				return false;
-			}
-
-			for (int i = 0; i < frames.size(); i++) {
-				int retries = 0;
-				final Future<Boolean> sendFrameFuture = executor
-						.submit(sendNextFrameTask(reader, writer, frames.get(i)));
-				try {
-					established = sendFrameFuture.get(SEND_FRAME_TIMEOUT, TimeUnit.SECONDS);
-				} catch (TimeoutException e) {
-					sendFrameFuture.cancel(true);
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (InterruptedException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (ExecutionException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
-
-				char response = (char) reader.read();
-				if (response == ACK) {
-					continue;
-				} else if (response == EOT) {
-					termination(writer);
-					return false;
-					// TODO
-//					throw new Exception(
-//							"remote server recieved the message successfully but asked that the connection be terminated");
-				} else if (response == NAK) {
-					--i;
-					if (++retries > MAX_FRAME_RETRY_ATTEMPTS) {
-						termination(writer);
-						return false;
-					}
-					continue;
-				} else {
-					// TODO log
-					--i;
-					if (++retries > MAX_FRAME_RETRY_ATTEMPTS) {
-						termination(writer);
-						return false;
-					}
-					continue;
-				}
-			}
-			termination(writer);
-		} catch (RuntimeException e) {
-			// TODO
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
 		}
 
-		return true;
+		if (!established) {
+			executor.shutdown();
+			termination(writer);
+			throw new ASTMCommunicationException(
+					"the establishment phase failed or had exceptions exceeding the number of retries");
+		}
+
+		List<Exception> exceptions = new ArrayList<>();
+		for (int i = 0; i < frames.size(); i++) {
+			final Future<Boolean> sendFrameFuture = executor.submit(sendNextFrameTask(reader, writer, frames.get(i)));
+			try {
+				established = sendFrameFuture.get(SEND_FRAME_TIMEOUT, TimeUnit.SECONDS);
+			} catch (TimeoutException e) {
+				sendFrameFuture.cancel(true);
+				exceptions.add(e);
+				log.error("a timeout occured during the sending phase", e);
+			} catch (InterruptedException | ExecutionException e) {
+				exceptions.add(e);
+				log.error("the sending phase was interrupted or had an error in exeuction", e);
+			}
+
+			if (exceptions.size() > MAX_FRAME_RETRY_ATTEMPTS) {
+				termination(writer);
+				throw new ASTMCommunicationException("the send phase had too many retries sending frame " + i);
+			}
+
+			char response = (char) reader.read();
+			if (response == ACK) {
+				exceptions = new ArrayList<>();
+				continue;
+			} else if (response == EOT) {
+				termination(writer);
+				throw new ASTMCommunicationException("the send phase was terminated early by the remote server");
+			} else if (response == NAK) {
+				exceptions.add(new ASTMCommunicationException("NAK received for frame " + i));
+				if (exceptions.size() > MAX_FRAME_RETRY_ATTEMPTS) {
+					termination(writer);
+					throw new ASTMCommunicationException("the send phase had too many retries sending frame " + i);
+				}
+				continue;
+			} else {
+				exceptions.add(
+						new ASTMCommunicationException("Illegal character received in acknowledgment for frame " + i));
+				if (exceptions.size() > MAX_FRAME_RETRY_ATTEMPTS) {
+					termination(writer);
+					throw new ASTMCommunicationException("the send phase had too many retries sending frame " + i);
+				}
+				continue;
+			}
+		}
+		termination(writer);
 	}
 
 	private Callable<Boolean> establishmentTaskSend(BufferedReader reader, PrintWriter writer) {
@@ -346,6 +354,7 @@ public class LIS01A2Communicator {
 	}
 
 	private void termination(PrintWriter writer) {
+		log.debug("sending termination for exhange");
 		writer.append(EOT);
 		writer.flush();
 	}
@@ -362,6 +371,7 @@ public class LIS01A2Communicator {
 		}
 		computedChecksum += (byte) frameTerminator;
 		computedChecksum %= 256;
+		log.debug("frame number " + frameNumber + " calculated checksum: " + computedChecksum);
 		return String.format("%02X", computedChecksum);
 	}
 

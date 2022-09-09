@@ -10,8 +10,11 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+import org.itech.ahb.lib.astm.servlet.ASTMHandler.HandleStatus;
 import org.itech.ahb.lib.common.ASTMInterpreter;
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.exception.ASTMCommunicationException;
+import org.itech.ahb.lib.common.exception.FrameParsingException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -39,8 +42,14 @@ public class ASTMServerThread extends Thread {
 
 			try {
 				List<ASTMMessage> messages = new LIS01A2Communicator(interpreter).receiveProtocol(reader, writer);
-				astmHandlerMarshaller.handle(messages);
-			} catch (IllegalStateException e) {
+				for (ASTMMessage message : messages) {
+					HandleStatus status = astmHandlerMarshaller.handle(message);
+					log.debug("astm HandleStatus is: " + status);
+					if (status != HandleStatus.SUCCESS) {
+						log.error("message was not handled successfully");
+					}
+				}
+			} catch (IllegalStateException | FrameParsingException | ASTMCommunicationException e) {
 				log.error("an error occurred understanding or handling what was received from the astm client", e);
 			}
 

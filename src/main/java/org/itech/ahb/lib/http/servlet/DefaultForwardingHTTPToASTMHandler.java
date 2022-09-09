@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import org.itech.ahb.lib.astm.servlet.LIS01A2Communicator;
 import org.itech.ahb.lib.common.ASTMInterpreterFactory;
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.exception.ASTMCommunicationException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -46,8 +47,8 @@ public class DefaultForwardingHTTPToASTMHandler implements HTTPHandler {
 			PrintWriter writer = new PrintWriter(outputStream, true);
 
 			log.debug("forwarding to astm server at " + forwardingAddress + ":" + forwardingPort);
-			success = communicator.sendProtocol(message, reader, writer);
-		} catch (IOException e) {
+			communicator.sendProtocol(message, reader, writer);
+		} catch (IOException | ASTMCommunicationException e) {
 			log.error("error occurred communicating with astm server at " + forwardingAddress + ":" + forwardingPort,
 					e);
 			return HandleStatus.FAIL;

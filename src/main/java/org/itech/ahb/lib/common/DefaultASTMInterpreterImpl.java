@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.itech.ahb.lib.astm.servlet.LIS01A2Communicator;
 import org.itech.ahb.lib.common.ASTMFrame.FrameType;
+import org.itech.ahb.lib.common.exception.FrameParsingException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -12,7 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 public class DefaultASTMInterpreterImpl implements ASTMInterpreter {
 
 	@Override
-	public List<ASTMMessage> interpretFramesToASTMMessages(List<ASTMFrame> frames) {
+	public List<ASTMMessage> interpretFramesToASTMMessages(List<ASTMFrame> frames) throws FrameParsingException {
 		log.debug("interpreting frames as astm messages...");
 		List<ASTMMessage> messages = new ArrayList<>();
 		StringBuilder sb = new StringBuilder();
@@ -24,7 +25,7 @@ public class DefaultASTMInterpreterImpl implements ASTMInterpreter {
 				messages.add(new DefaultASTMMessage(sb.toString()));
 				sb = new StringBuilder();
 			} else {
-				throw new IllegalStateException(
+				throw new FrameParsingException(
 						"frame type is an unrecognized type so message cannot be reconstructed");
 			}
 		}
