@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.exception.FrameParsingException;
 import org.itech.ahb.lib.http.servlet.HTTPHandler.HandleStatus;
 
 import lombok.extern.slf4j.Slf4j;
@@ -38,12 +39,15 @@ public class HTTPHandlerMarshaller {
 		for (Entry<ASTMMessage, HTTPHandler> messageHandler : messageHandlers.entrySet()) {
 			try {
 				HandleStatus status = messageHandler.getValue().handle(messageHandler.getKey());
-				log.debug("finished handling astm http message");
+				log.debug("finished attempting handling astm http message");
 				return status;
 			} catch (RuntimeException e) {
 				log.error("unexpected error occurred during handling astm http message: " + messageHandler.getKey(), e);
 				return HandleStatus.FAIL;
 				// TODO add some handle exception handling. retry queue? db save?
+			} catch (FrameParsingException e) {
+				log.error("Line contention has occured and could not parse the received information", e);
+				return HandleStatus.FAIL;
 			}
 		}
 		return HandleStatus.UNHANDLED;

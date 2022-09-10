@@ -12,15 +12,18 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class DefaultASTMInterpreterImpl implements ASTMInterpreter {
 
+	private static final String RECORD_SEPERATOR = Character.toString(0x0D);// CR
+	private static final String MESSAGE_TERMINATOR_RECORD_START = "L";
+
 	@Override
 	public List<ASTMMessage> interpretFramesToASTMMessages(List<ASTMFrame> frames) throws FrameParsingException {
 		log.debug("interpreting frames as astm messages...");
 		List<ASTMMessage> messages = new ArrayList<>();
 		StringBuilder sb = new StringBuilder();
 		for (ASTMFrame frame : frames) {
-			if (frame.getType() == FrameType.INTERMEDIATE) {
+			if (frame.getType() == FrameType.INTERMEDIATE || !frameContainsMessageTerminator(frame)) {
 				sb.append(frame.getText());
-			} else if (frame.getType() == FrameType.END) {
+			} else if (frame.getType() == FrameType.END ) {
 				sb.append(frame.getText());
 				messages.add(new DefaultASTMMessage(sb.toString()));
 				sb = new StringBuilder();
@@ -31,6 +34,14 @@ public class DefaultASTMInterpreterImpl implements ASTMInterpreter {
 		}
 		log.debug("finished interpreting frames as astm messages");
 		return messages;
+	}
+
+	private boolean frameContainsMessageTerminator(ASTMFrame frame) {
+		String[] lines = frame.getText().split(RECORD_SEPERATOR);
+		if (lines[lines.length - 1].startsWith(MESSAGE_TERMINATOR_RECORD_START)) {
+			return true;
+		}
+		return false;
 	}
 
 	@Override

@@ -2,22 +2,22 @@ package org.itech.ahb.lib.astm.servlet;
 
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.List;
 
 import org.itech.ahb.lib.common.ASTMInterpreterFactory;
 
 public class ASTMServlet {
 
-	private final List<ASTMHandler> handlers;
+	private final ASTMHandlerMarshaller astmMessageMarshaller;
 	private final ASTMInterpreterFactory astmInterpreterFactory;
 	private final int listenPort;
 
-	public ASTMServlet(List<ASTMHandler> handlers, ASTMInterpreterFactory astmInterpreterFactory, int listenPort) {
-		this.handlers = handlers;
+	public ASTMServlet(ASTMHandlerMarshaller astmMessageMarshaller, ASTMInterpreterFactory astmInterpreterFactory,
+			int listenPort) {
+		this.astmMessageMarshaller = astmMessageMarshaller;
 		this.astmInterpreterFactory = astmInterpreterFactory;
 		this.listenPort = listenPort;
-	} 
-	
+	}
+
 	public void listen() {
 		try (ServerSocket serverSocket = new ServerSocket(listenPort)) {
 			System.out.println("Server is listening on port " + listenPort);
@@ -25,7 +25,7 @@ public class ASTMServlet {
 			while (true) {
 				// Waiting for socket connection
 				Socket s = serverSocket.accept();
-				new ASTMServerThread(s, astmInterpreterFactory.createInterpreter(), handlers).start();
+				new ASTMReceiveThread(s, astmInterpreterFactory, astmMessageMarshaller).start();
 
 			}
 		} catch (Exception e) {

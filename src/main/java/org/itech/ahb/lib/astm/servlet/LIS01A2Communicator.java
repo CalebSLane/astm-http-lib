@@ -1,8 +1,13 @@
 package org.itech.ahb.lib.astm.servlet;
 
 import java.io.BufferedReader;
+import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.net.Socket;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -17,10 +22,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.itech.ahb.lib.common.ASTMFrame;
 import org.itech.ahb.lib.common.ASTMFrame.FrameType;
-import org.itech.ahb.lib.common.ASTMInterpreter;
+import org.itech.ahb.lib.common.ASTMInterpreterFactory;
 import org.itech.ahb.lib.common.ASTMMessage;
 import org.itech.ahb.lib.common.exception.ASTMCommunicationException;
 import org.itech.ahb.lib.common.exception.FrameParsingException;
@@ -28,7 +34,7 @@ import org.itech.ahb.lib.common.exception.FrameParsingException;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public class LIS01A2Communicator {
+public class LIS01A2Communicator implements Closeable {
 
 	public enum FrameError {
 		WRONG_FRAME_NUMBER, MAX_SIZE_EXCEEDED, ILLEGAL_CHAR, BAD_CHECKSUM, ILLEGAL_START, ILLEGAL_END
@@ -57,30 +63,56 @@ public class LIS01A2Communicator {
 	public static final int MAX_FRAME_SIZE = 64000;
 	public static final int MAX_TEXT_SIZE = MAX_FRAME_SIZE - 7;
 
-	private static final int ESTABLISHMENT_SEND_TIMEOUT = 15; // in seconds
-	private static final int ESTABLISHMENT_RECEIVE_TIMEOUT = 20; // in seconds
-	private static final int RECIEVE_FRAME_TIMEOUT = 30; // in seconds
-	private static final int SEND_FRAME_TIMEOUT = 30; // in seconds
+	private static final int ESTABLISHMENT_SEND_TIMEOUT = 150; // in seconds
+	private static final int ESTABLISHMENT_RECEIVE_TIMEOUT = 200; // in seconds
+	private static final int RECIEVE_FRAME_TIMEOUT = 300; // in seconds
+	private static final int SEND_FRAME_TIMEOUT = 300; // in seconds
 
 	private static final int MAX_RECEIVE_RETRY_ATTEMPTS = 3;
 
 	private static final int MAX_SEND_ESTABLISH_RETRY_ATTEMPTS = 3;
-	private static final int SEND_ATTEMPTS_WAIT = 10; // in seconds
+	private static final int SEND_ATTEMPTS_WAIT = 100; // in seconds
 
 	private static final int MAX_FRAME_RETRY_ATTEMPTS = 5;
 
-	private final ExecutorService executor = Executors.newSingleThreadExecutor();
-	private final ASTMInterpreter interpreter;
-
-	public LIS01A2Communicator(ASTMInterpreter interpreter) {
-		this.interpreter = interpreter;
+	// wrapping counter
+	private static final AtomicInteger COMMUNICATOR_ID_COUNTER = new AtomicInteger(0);
+	private static final int MAX_COMMUNICATOR_ID_COUNTER = 1024;
+	private final int incrementAndGetId() {
+		return COMMUNICATOR_ID_COUNTER.accumulateAndGet(1,
+				(index, inc) -> (++index > MAX_COMMUNICATOR_ID_COUNTER ? 0 : index));
 	}
 
-	public List<ASTMMessage> receiveProtocol(BufferedReader reader, PrintWriter writer)
-			throws FrameParsingException, ASTMCommunicationException, IOException {
+	private final ExecutorService executor = Executors.newSingleThreadExecutor();
+	private final ASTMInterpreterFactory astmInterpreterFactory;
+	private final String communicatorId; // only used for debug messages
+
+	private Socket socket;
+	private BufferedReader reader;
+	private PrintWriter writer;
+
+	public LIS01A2Communicator(ASTMInterpreterFactory astmInterpreterFactory, Socket socket) throws IOException {
+		communicatorId = Integer.toString(incrementAndGetId());
+
+		InputStream input = socket.getInputStream();
+		BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
+
+		OutputStream outputStream = socket.getOutputStream();
+		PrintWriter writer = new PrintWriter(outputStream, true);
+
+		this.astmInterpreterFactory = astmInterpreterFactory;
+		this.reader = reader;
+		this.writer = writer;
+	}
+
+	public String getID() {
+		return communicatorId;
+	}
+
+	public List<ASTMMessage> receiveProtocol() throws FrameParsingException, ASTMCommunicationException, IOException {
 		List<ASTMFrame> frames = new ArrayList<>();
 
-		final Future<Boolean> establishedFuture = executor.submit(establishmentTaskReceive(reader, writer));
+		final Future<Boolean> establishedFuture = executor.submit(establishmentTaskReceive());
 		Boolean established = false;
 		try {
 			established = establishedFuture.get(ESTABLISHMENT_RECEIVE_TIMEOUT, TimeUnit.SECONDS);
@@ -111,8 +143,7 @@ public class LIS01A2Communicator {
 			if (startChar == EOT) {
 				eotDetected = true;
 			} else {
-				final Future<Set<FrameError>> recievedFrameFuture = executor
-						.submit(receiveNextFrameTask(reader, writer, frames));
+				final Future<Set<FrameError>> recievedFrameFuture = executor.submit(receiveNextFrameTask(frames));
 				try {
 					Set<FrameError> frameErrors = recievedFrameFuture.get(RECIEVE_FRAME_TIMEOUT, TimeUnit.SECONDS);
 
@@ -150,10 +181,10 @@ public class LIS01A2Communicator {
 					"the receiving phase failed or had exceptions exceeding the number of retries");
 		}
 
-		return interpreter.interpretFramesToASTMMessages(frames);
+		return astmInterpreterFactory.createInterpreter(frames).interpretFramesToASTMMessages(frames);
 	}
 
-	private Callable<Boolean> establishmentTaskReceive(BufferedReader reader, PrintWriter writer) {
+	private Callable<Boolean> establishmentTaskReceive() {
 		return new Callable<Boolean>() {
 			@Override
 			public Boolean call() throws IOException {
@@ -170,21 +201,20 @@ public class LIS01A2Communicator {
 		};
 	}
 
-	private Callable<Set<FrameError>> receiveNextFrameTask(BufferedReader reader, PrintWriter writer,
-			List<ASTMFrame> frames) throws IOException {
+	private Callable<Set<FrameError>> receiveNextFrameTask(List<ASTMFrame> frames) throws IOException {
 		return new Callable<Set<FrameError>>() {
 			@Override
 			public Set<FrameError> call() throws IOException {
-				return readNextFrame(reader, writer, frames, (frames.size() + 1) % 8);
+				return readNextFrame(frames, (frames.size() + 1) % 8);
 			}
 		};
 	}
 
-	private Set<FrameError> readNextFrame(BufferedReader reader, PrintWriter writer, List<ASTMFrame> frames,
-			int expectedFrameNumber) throws IOException {
+	private Set<FrameError> readNextFrame(List<ASTMFrame> frames, int expectedFrameNumber) throws IOException {
 		log.debug("reading frame...");
 		Set<FrameError> frameErrors = new HashSet<>();
 		char frameNumberChar = (char) reader.read();
+
 		if (expectedFrameNumber != Character.getNumericValue(frameNumberChar)) {
 			frameErrors.add(FrameError.WRONG_FRAME_NUMBER);
 		}
@@ -231,15 +261,21 @@ public class LIS01A2Communicator {
 		return frameErrors;
 	}
 
-	public void sendProtocol(ASTMMessage message, BufferedReader reader, PrintWriter writer)
-			throws ASTMCommunicationException, IOException {
-		List<ASTMFrame> frames = interpreter.interpretASTMMessageToFrames(message);
+	public boolean sendProtocol(ASTMMessage message) throws ASTMCommunicationException, IOException {
+		List<ASTMFrame> frames = astmInterpreterFactory.createInterpreter(message)
+				.interpretASTMMessageToFrames(message);
 
 		Boolean established = false;
+		Boolean lineContention = false;
 		for (int i = 0; i <= MAX_SEND_ESTABLISH_RETRY_ATTEMPTS; i++) {
-			final Future<Boolean> establishedFuture = executor.submit(establishmentTaskSend(reader, writer));
+			final Future<Character> establishedFuture = executor.submit(establishmentTaskSend());
 			try {
-				established = establishedFuture.get(ESTABLISHMENT_SEND_TIMEOUT, TimeUnit.SECONDS);
+				Character validResponseChar = establishedFuture.get(ESTABLISHMENT_SEND_TIMEOUT, TimeUnit.SECONDS);
+				lineContention = Character.compare(validResponseChar, ENQ) == 0;
+				if (lineContention) {
+					return false;
+				}
+				established = Character.compare(validResponseChar, ACK) == 0;
 
 			} catch (TimeoutException e) {
 				establishedFuture.cancel(true);
@@ -262,14 +298,14 @@ public class LIS01A2Communicator {
 
 		if (!established) {
 			executor.shutdown();
-			termination(writer);
+			terminationSignal();
 			throw new ASTMCommunicationException(
 					"the establishment phase failed or had exceptions exceeding the number of retries");
 		}
 
 		List<Exception> exceptions = new ArrayList<>();
 		for (int i = 0; i < frames.size(); i++) {
-			final Future<Boolean> sendFrameFuture = executor.submit(sendNextFrameTask(reader, writer, frames.get(i)));
+			final Future<Boolean> sendFrameFuture = executor.submit(sendNextFrameTask(frames.get(i)));
 			try {
 				established = sendFrameFuture.get(SEND_FRAME_TIMEOUT, TimeUnit.SECONDS);
 			} catch (TimeoutException e) {
@@ -282,7 +318,7 @@ public class LIS01A2Communicator {
 			}
 
 			if (exceptions.size() > MAX_FRAME_RETRY_ATTEMPTS) {
-				termination(writer);
+				terminationSignal();
 				throw new ASTMCommunicationException("the send phase had too many retries sending frame " + i);
 			}
 
@@ -291,12 +327,12 @@ public class LIS01A2Communicator {
 				exceptions = new ArrayList<>();
 				continue;
 			} else if (response == EOT) {
-				termination(writer);
+				terminationSignal();
 				throw new ASTMCommunicationException("the send phase was terminated early by the remote server");
 			} else if (response == NAK) {
 				exceptions.add(new ASTMCommunicationException("NAK received for frame " + i));
 				if (exceptions.size() > MAX_FRAME_RETRY_ATTEMPTS) {
-					termination(writer);
+					terminationSignal();
 					throw new ASTMCommunicationException("the send phase had too many retries sending frame " + i);
 				}
 				continue;
@@ -304,34 +340,38 @@ public class LIS01A2Communicator {
 				exceptions.add(
 						new ASTMCommunicationException("Illegal character received in acknowledgment for frame " + i));
 				if (exceptions.size() > MAX_FRAME_RETRY_ATTEMPTS) {
-					termination(writer);
+					terminationSignal();
 					throw new ASTMCommunicationException("the send phase had too many retries sending frame " + i);
 				}
 				continue;
 			}
 		}
-		termination(writer);
+		terminationSignal();
+		return true;
 	}
 
-	private Callable<Boolean> establishmentTaskSend(BufferedReader reader, PrintWriter writer) {
-		return new Callable<Boolean>() {
+	private Callable<Character> establishmentTaskSend() {
+		return new Callable<Character>() {
 			@Override
-			public Boolean call() throws IOException {
+			public Character call() throws IOException {
 				writer.append(ENQ);
 				writer.flush();
+				StringBuilder sb = new StringBuilder();
 				char response = (char) reader.read();
 				if (response == ACK) {
-					return true;
+					return ACK;
 				} else if (response == NAK) {
-					return false;
+					return NAK;
+				} else if (response == ENQ) {
+					return ENQ;
 				} else {
-					return false;
+					return null;
 				}
 			}
 		};
 	}
 
-	private Callable<Boolean> sendNextFrameTask(BufferedReader reader, PrintWriter writer, ASTMFrame frame) {
+	private Callable<Boolean> sendNextFrameTask(ASTMFrame frame) {
 		return new Callable<Boolean>() {
 			@Override
 			public Boolean call() {
@@ -353,7 +393,7 @@ public class LIS01A2Communicator {
 		};
 	}
 
-	private void termination(PrintWriter writer) {
+	private void terminationSignal() {
 		log.debug("sending termination for exhange");
 		writer.append(EOT);
 		writer.flush();
@@ -373,6 +413,15 @@ public class LIS01A2Communicator {
 		computedChecksum %= 256;
 		log.debug("frame number " + frameNumber + " calculated checksum: " + computedChecksum);
 		return String.format("%02X", computedChecksum);
+	}
+
+	@Override
+	public void close() throws IOException {
+		if (socket != null && socket.isClosed()) {
+			socket.close();
+		}
+		log.debug("successfully closed communicator " + getID());
+
 	}
 
 }
