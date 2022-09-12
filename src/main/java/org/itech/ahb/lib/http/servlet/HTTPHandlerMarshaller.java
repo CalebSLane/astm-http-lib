@@ -6,8 +6,8 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.HandleStatus;
 import org.itech.ahb.lib.common.exception.FrameParsingException;
-import org.itech.ahb.lib.http.servlet.HTTPHandler.HandleStatus;
 
 import lombok.extern.slf4j.Slf4j;
 

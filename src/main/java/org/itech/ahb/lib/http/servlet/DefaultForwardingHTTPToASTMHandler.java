@@ -8,6 +8,7 @@ import org.itech.ahb.lib.astm.servlet.ASTMReceiveThread;
 import org.itech.ahb.lib.astm.servlet.LIS01A2Communicator;
 import org.itech.ahb.lib.common.ASTMInterpreterFactory;
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.HandleStatus;
 import org.itech.ahb.lib.common.exception.ASTMCommunicationException;
 import org.itech.ahb.lib.common.exception.FrameParsingException;
 

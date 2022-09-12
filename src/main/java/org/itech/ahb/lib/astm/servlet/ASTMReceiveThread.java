@@ -4,9 +4,9 @@ import java.io.IOException;
 import java.net.Socket;
 import java.util.List;
 
-import org.itech.ahb.lib.astm.servlet.ASTMHandler.HandleStatus;
 import org.itech.ahb.lib.common.ASTMInterpreterFactory;
 import org.itech.ahb.lib.common.ASTMMessage;
+import org.itech.ahb.lib.common.HandleStatus;
 import org.itech.ahb.lib.common.exception.ASTMCommunicationException;
 import org.itech.ahb.lib.common.exception.FrameParsingException;
 
