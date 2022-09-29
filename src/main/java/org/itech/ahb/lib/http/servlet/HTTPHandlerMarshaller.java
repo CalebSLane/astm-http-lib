@@ -4,6 +4,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.itech.ahb.lib.common.ASTMMessage;
 import org.itech.ahb.lib.common.HandleStatus;
@@ -21,6 +23,10 @@ public class HTTPHandlerMarshaller {
 	}
 
 	public HandleStatus handle(ASTMMessage message) {
+		return handle(message, Set.of());
+	}
+
+	public HandleStatus handle(ASTMMessage message, Set<HttpForwardingHandlerInfo> handlersInfos) {
 
 		Map<ASTMMessage, HTTPHandler> messageHandlers = new HashMap<>();
 		log.debug("finding a handler for astm http message: " + message.hashCode());
@@ -38,7 +44,10 @@ public class HTTPHandlerMarshaller {
 		log.debug("handling astm http message...");
 		for (Entry<ASTMMessage, HTTPHandler> messageHandler : messageHandlers.entrySet()) {
 			try {
-				HandleStatus status = messageHandler.getValue().handle(messageHandler.getKey());
+
+				HandleStatus status = messageHandler.getValue().handle(messageHandler.getKey(),
+						handlersInfos.stream().filter(e -> e.supports(messageHandler.getValue()))
+								.collect(Collectors.toSet()));
 				log.debug("finished attempting handling astm http message");
 				return status;
 			} catch (RuntimeException e) {

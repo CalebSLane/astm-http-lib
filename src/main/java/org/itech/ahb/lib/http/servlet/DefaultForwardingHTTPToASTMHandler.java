@@ -2,7 +2,9 @@ package org.itech.ahb.lib.http.servlet;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.Set;
 
+import org.apache.commons.lang3.StringUtils;
 import org.itech.ahb.lib.astm.servlet.ASTMHandlerMarshaller;
 import org.itech.ahb.lib.astm.servlet.ASTMReceiveThread;
 import org.itech.ahb.lib.astm.servlet.LIS01A2Communicator;
@@ -17,25 +19,37 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class DefaultForwardingHTTPToASTMHandler implements HTTPHandler {
 
-	private final String forwardingAddress;
-	private final int forwardingPort;
+	private final String defaultForwardingAddress;
+	private final int defaultForwardingPort;
 	private final ASTMInterpreterFactory interpreterFactory;
-	private final ASTMHandlerMarshaller astmHandlerMarshaller; // this is neccessary in case of line contention
+	private final ASTMHandlerMarshaller astmHandlerMarshaller; // this is necessary in case of line contention
 
 	public DefaultForwardingHTTPToASTMHandler(String forwardingAddress, int forwardingPort,
 			ASTMHandlerMarshaller astmHandlerMarshaller, ASTMInterpreterFactory interpreterFactory) {
-		this.forwardingAddress = forwardingAddress;
-		this.forwardingPort = forwardingPort;
+		this.defaultForwardingAddress = forwardingAddress;
+		this.defaultForwardingPort = forwardingPort;
 		this.interpreterFactory = interpreterFactory;
 		this.astmHandlerMarshaller = astmHandlerMarshaller;
 	}
 
 	@Override
-	public HandleStatus handle(ASTMMessage message) throws FrameParsingException {
+	public HandleStatus handle(ASTMMessage message, Set<HTTPHandlerInfo> handlerInfos) throws FrameParsingException {
 		Socket socket = null;
 		boolean success = false;
 		boolean closeSocket = true;
 		LIS01A2Communicator communicator = null;
+		String forwardingAddress = this.defaultForwardingAddress;
+		int forwardingPort = this.defaultForwardingPort;
+		for (HTTPHandlerInfo handlerInfo : handlerInfos ) {
+			if (handlerInfo instanceof HttpForwardingHandlerInfo) {
+				HttpForwardingHandlerInfo httpForwardingHandlerInfo = (HttpForwardingHandlerInfo) handlerInfo;
+				forwardingAddress = StringUtils.isBlank(httpForwardingHandlerInfo.getForwardAddress())
+						? forwardingAddress
+						: httpForwardingHandlerInfo.getForwardAddress();
+				forwardingPort = httpForwardingHandlerInfo.getForwardPort() <= 0 ? forwardingPort
+								: httpForwardingHandlerInfo.getForwardPort();
+			}
+		}
 		try {
 			log.debug("connecting to forward to astm server at " + forwardingAddress + ":" + forwardingPort);
 			socket = new Socket(forwardingAddress, forwardingPort);
@@ -55,6 +69,11 @@ public class DefaultForwardingHTTPToASTMHandler implements HTTPHandler {
 				closeSocket = false;
 				ASTMReceiveThread receiveThread = new ASTMReceiveThread(communicator, astmHandlerMarshaller);
 				receiveThread.start();
+
+				if (message.getMessageLength() == 0) {
+					log.info("since message request was empty, it is assumed this was a ping to trigger an action");
+					success = true;
+				}
 			}
 		} catch (IOException | ASTMCommunicationException e) {
 			log.error("error occurred communicating with astm server at " + forwardingAddress + ":" + forwardingPort,
